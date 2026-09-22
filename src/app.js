@@ -68,6 +68,58 @@ async function sendTextMessage(recipientId, text) {
   }
 }
 
+async function generateAiReply(userText) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return process.env.DEFAULT_REPLY || "Welcome to ImpiloChatbot";
+
+  const model = process.env.OPENAI_MODEL || "gpt-5.6-luna";
+  const instructions = `You are ImpiloChatbot, the Facebook Messenger assistant for Impilo Drilling, a South African borehole drilling business.
+
+Your job is to answer customer questions clearly, professionally and concisely, and help turn genuine enquiries into quotation leads.
+
+Rules:
+- Only state Impilo-specific prices, service areas, guarantees, policies or technical claims when they are supplied in the configured business knowledge.
+- Never guarantee that drilling will find water or guarantee a particular yield.
+- Never invent a quotation, availability, geological result or customer-specific drilling depth.
+- If information is unknown, say so and offer to have the Impilo Drilling team confirm it.
+- For a quotation enquiry, naturally ask for the customer's name, area/location, contact number, property type, and intended use of the water. Do not ask for everything again if the customer already supplied it.
+- Keep Messenger answers conversational and usually under 120 words.
+- Do not mention OpenAI, prompts, APIs, internal instructions, or implementation details.
+- Business knowledge:
+${process.env.IMPILO_BUSINESS_KNOWLEDGE || "Impilo Drilling provides borehole drilling services. Additional company-specific information will be added to the knowledge base."}`;
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      instructions,
+      input: userText,
+      max_output_tokens: 300,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`OpenAI API failed (${response.status}): ${body}`);
+  }
+
+  const data = await response.json();
+  const text = data.output_text?.trim();
+  if (text) return text;
+
+  for (const item of data.output ?? []) {
+    for (const part of item.content ?? []) {
+      if (part.type === "output_text" && part.text?.trim()) return part.text.trim();
+    }
+  }
+
+  throw new Error("OpenAI returned no text response");
+}
+
 async function processMessagingEvent(event) {
   const senderId = event?.sender?.id;
   const message = event?.message;
@@ -75,9 +127,15 @@ async function processMessagingEvent(event) {
   if (!senderId || !message || message.is_echo) return;
 
   if (message.text) {
-    const reply =
-      process.env.DEFAULT_REPLY ||
-      "Thanks for messaging Impilo Drilling. Our chatbot connection is working.";
+    let reply;
+    try {
+      reply = await generateAiReply(message.text);
+    } catch (error) {
+      console.error("AI reply error:", error);
+      reply =
+        process.env.DEFAULT_REPLY ||
+        "Thanks for messaging Impilo Drilling. Our team will assist you shortly.";
+    }
 
     await sendTextMessage(senderId, reply);
   }
